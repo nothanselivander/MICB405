@@ -1,0 +1,20 @@
+BWA_alignment & Gene Counting
+
+
+####
+bwa index /projects/micb405/finalprojects2023W1/group09/ref/fasta.fna
+
+bwa mem ../fasta.fna /projects/micb405/finalprojects2023W1/group09/fastq_files/cd2/ph5-5_t37_rep3_1.fastq.gz /projects/micb405/finalprojects2023W1/group09/fastq_files/cd2/ph5-5_t37_rep3_2.fastq.gz | samtools view -h -b -o cd2rep3.bam 
+
+
+############### SORT THE BAM FILE
+
+samtools sort cd2rep3.bam -o cd2rep3.sorted.bam
+
+############### FEATURE COUNT
+
+htseq-count -f bam -t gene -i gene_id -c counts.tsv -r pos cd2rep3.sorted.bam GCF_000698885.1_ASM69888v1_genomic.gtf
+
+
+
+

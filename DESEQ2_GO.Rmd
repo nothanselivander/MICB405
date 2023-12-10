@@ -1,0 +1,940 @@
+---
+title: "MICB 405 - Group 09 - Final Project"
+author: "Alex, Earl, Hansel, Patrick"
+date: "2023-11-07"
+output: pdf_document
+---
+###############################################
+
+```{r echo=FALSE}
+# Setting the working directory
+setwd("E:/Dropbox/Dropbox/2023/TEMP/MICB405")
+```
+
+
+```{r message=FALSE, include=FALSE}
+# loading necessary packages
+suppressPackageStartupMessages(library(DESeq2))
+suppressPackageStartupMessages(library(pheatmap))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(topGO))
+suppressPackageStartupMessages(library(plyr))
+suppressPackageStartupMessages(library(tidyverse))
+```
+
+
+```{r}
+# Load HTSeq results into R
+
+# Import data
+merge_counts <- readr::read_tsv("merged_counts.tsv", 
+                                col_names = c("gene_id", "cd1_rep1", "cd1_rep2", "cd1_rep3", "cd2_rep1", "cd2_rep2", "cd2_rep3"), 
+                                show_col_types = FALSE)
+merge_counts1<- dat <- head(merge_counts,-5) # excluding the last 5 rows with no gene informaiton (not-aligned, ambiguous, no-feature and two-low-quality reads)
+
+dat1 <- merge_counts 
+
+dat$gene_id<-NULL
+rownames(dat) <- merge_counts1$gene_id
+
+class(dat)
+view(dat)
+
+```
+
+```{r}
+# some house cleaning and exploring the data
+view(dat1)
+ total_reads<-dat1 %>%
+  mutate (reads = cd1_rep1+cd1_rep2+cd1_rep3+cd2_rep1+cd2_rep2+cd2_rep3,
+          identified_genes = ifelse(reads>0,1,0))%>%
+  select(reads)%>%
+  sum()
+
+total_genes<- head(dat1,-5) %>%
+  mutate (reads = cd1_rep1+cd1_rep2+cd1_rep3+cd2_rep1+cd2_rep2+cd2_rep3,
+          identified_genes = ifelse(reads>0,1,0))%>%
+  select(identified_genes)%>%
+  sum()
+
+reads_id_genes<- head(dat1,-5) %>%
+  mutate (reads = cd1_rep1+cd1_rep2+cd1_rep3+cd2_rep1+cd2_rep2+cd2_rep3,
+          identified_genes = ifelse(reads>0,1,0))%>%
+  filter(identified_genes==1)%>%
+  select(reads)%>%
+  sum()
+
+total_reads # total number of reads
+total_genes # total number of identified genes
+reads_id_genes # total number of reads of identified genes
+
+reads_id_genes/total_reads # ratio aligned reads and total number of reads
+
+```
+
+
+```{r}
+## [matrix transformation
+dat_matrix<- as.matrix(dat) 
+# Look at the first 10 rows of the matrix
+head(dat_matrix, 10) 
+class(dat_matrix) 
+```
+
+## *Step 02 DESeq2 and count normalization*
+```{r setup, include=FALSE}
+# matrix transformation
+dat_matrix <- as.matrix(dat)
+
+metadata <- data.frame(row.names = colnames(dat_matrix), 
+                       condition = c("cd1", "cd1", "cd1", 
+                                     "cd2", "cd2", "cd2"))
+colnames(dat_matrix) == rownames(metadata)
+head(dat_matrix)
+metadata
+```
+
+# *Running DESeq2*
+
+```{r}
+# DESeq2 object creation - converting counts to integer mode
+dds_matrix <- DESeqDataSetFromMatrix(countData = dat_matrix, #matrix 
+                              colData = metadata, #metadata file
+                              design = ~condition)
+
+dds_matrix
+
+# Setting cd1 as control condition 
+dds_matrix$condition <- relevel(dds_matrix$condition, ref = "cd1")
+
+levels(dds_matrix$condition)
+
+# Running DESeq2 on the leveled dataset and saving the dds object
+dds <- DESeq(dds_matrix)
+saveRDS(dds, "dds.rds")
+```
+
+## *Sanity Checks and Quality Assessment: Sample Clustering*
+```{r}
+# Perform log transformation on our count data
+rld <- rlog(dds)
+```
+
+```{r}
+# Define the colors
+group09_colors <- c("#ff914d", "#231076")
+```
+
+
+```{r}
+# Names of the results that DESeq2 calculated
+resultsNames(dds)
+
+# Comparison between condition 2 and condtion 1
+res <- results(dds, name = "condition_cd2_vs_cd1") %>% as.data.frame() # we save it as a dataframe for easy manipulation with dplyr 
+head(res)
+
+glimpse(res)
+```
+
+### *Clean data - remove NAs - filtering padj <=0.05 and more - Check results*
+```{r}
+view(res)
+```
+
+
+```{r}
+# Data cleaning - removin NAs
+res_no_NA <- res %>% 
+  drop_na()
+glimpse(res_no_NA)
+
+# filter padj <= 0.05
+res_filtered <- res_no_NA %>% 
+  filter(padj <= 0.05)
+glimpse(res_filtered)
+
+res_filtered_final <- res_filtered %>% 
+  filter(log2FoldChange <= -0 | log2FoldChange >= 0) %>% # filtering log2FoldChange below or equal than -1 or higher or equal than 1
+  rownames_to_column("gene_id") # Convert the rownames into a column so they can be saved in your CSV file
+glimpse(res_filtered_final)
+
+res_filtered_final2 <- res_filtered %>% 
+  filter(log2FoldChange <= -2 | log2FoldChange >= 2) %>% # filtering log2FoldChange below or equal than -1 or higher or equal than 1
+  rownames_to_column("gene_id") # Convert the rownames into a column so they can be saved in your CSV file
+glimpse(res_filtered_final2)
+
+view(res_no_NA)
+view(res_filtered)
+view(res_filtered_final)
+```
+
+## **Top upregulated genes**
+```{r}
+# Top 10 upregulated genes (most positive log2FoldChange)
+top10_genes <- res_filtered_final %>%
+  arrange(desc(log2FoldChange)) %>% # NOTE that we use the desc() function to organize the column in descending order
+  head(n = 10)
+top10_genes
+```
+
+## **Top downregulated genes**
+```{r}
+# Top 10 downregulated genes (most negative log2FoldChange)
+bot10_genes <- res_filtered_final %>%
+  arrange(log2FoldChange) %>% # NOTE since we don't use desc(), the column is organized in ascending order
+  head(n = 10)
+bot10_genes
+```
+
+
+```{r}
+# saving the filtered file
+write_csv(res_filtered_final, "strepto_thermophil_results.csv")
+
+```
+
+
+
+```{r}
+# Get the PCA data as a dataframe with returnData = TRUE
+pcaData <- plotPCA(rld, intgroup=c("condition"), returnData = TRUE) 
+glimpse(pcaData)
+```
+
+```{r}
+# Using the attr() function, we will extract the percent variation explained of each axis of the pcaData object
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+glimpse(percentVar)
+```
+
+
+## **PCA plot**
+```{r}
+# Generate a PCA plot with DESeq2's plotPCA function
+png("PCA_cd1_vs_cd2.png")
+pcaData %>% 
+  ggplot(aes(x = PC1, y = PC2, colour = condition)) +
+  geom_point(size = 4) +
+  scale_y_continuous(limits = c(-10,10)) +
+  scale_x_continuous(limits = c(-15,15)) +
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) + 
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) +
+  theme_bw() +
+  theme(plot.title = element_text(color = "#231076", size = 14, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        legend.position = c(0.9,0.2),
+        axis.title = element_text(color = "#231076",face = "bold",size = 12),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        panel.border = element_rect(color = "#231076",linewidth = 2),
+        legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=12),
+        axis.text.y= element_text(color = "#231076",size=12)) +
+  labs(colour = "Condition")+ 
+  scale_color_manual(values=group09_colors , labels=c("cd1", "cd2")) +
+  ggtitle("Principal Component Analysis") 
+```
+
+## **Pheatmap plot**
+```{r}
+# Generate a heatmap using the pheatmap package
+png("PHeatMap_cd1_vs_cd2.png", width = 300, height = 300)
+sample_dists <- dist(t(assay(rld)))                   # Calculate distances between samples in our log-transformed data  
+sample_dist_matrix <- as.matrix(sample_dists)         # Convert the output to a matrix
+colnames(sample_dist_matrix) <- NULL                  # Remove the column names of our matrix
+colours <- colorRampPalette(rev(c("white", "#231076")))(255) # Set the colour palette for our heatmap
+
+pheatmap(sample_dist_matrix,
+         clustering_distance_rows = sample_dists,
+         clustering_distance_cols = sample_dists, 
+         col = colours, fontsize = 14, fontsize_row = 12, fontsize_col = 12,
+         main = "Pheatmap Analysis")+theme(text = element_text(size = 9))
+
+```
+
+```{r}
+dat <- read_csv("strepto_thermophil_results.csv")
+view(dat)
+```
+
+# find the gene changes
+```{r}
+# gene regulation
+labelled_dat <- dat %>%
+  mutate(Up_Down = case_when(
+    padj < 0.05 & log2FoldChange > 2 ~ "Upregulated", # label genes in the top right quadrant of the volcano plot
+    padj < 0.05 & log2FoldChange < (-2) ~ "Downregulated", # label genes in the top left quadrant of the volcano plot
+    TRUE ~ "NONE"
+  ))
+view(labelled_dat)
+summary(as.factor(labelled_dat$Up_Down))
+```
+
+
+```{r}
+png("Volcano_regulations_cd2_vs_cd1.png", width = 450, height=450)
+labelled_dat %>% 
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), color = Up_Down)) + # see that we are using the -log10() function to transform our padj values
+  geom_point(size=3)+
+  geom_hline(yintercept = -log10(0.05), linetype =2,size=1, color="#231076") +
+  geom_vline(xintercept = c(-2,2), linetype = 2, size=1, color="#231076") +
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076", size = 14, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        legend.position = c(0.4,0.8),
+        axis.title = element_text(color = "#231076",face = "bold",size = 12),
+        legend.text = element_text(size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=10),
+        axis.text.y= element_text(color = "#231076",size=10),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(y = expression(-Log[10]~"(Adjusted P-value)"), x = expression(Log[2] ~ "FC"), color="Gene regulation")+
+  scale_color_manual(values = c("#ff914d","grey","#231076"), 
+                     labels = c( "Downregulated","Other genes", "Upregulated")) + 
+  ggtitle("Genes regulation change between cd2 and cd1") 
+```
+
+## top regulated genes
+```{r}
+# top regulated genes
+topGenes <- dat %>%
+  arrange(padj) %>%
+  head(n = 10) %>%
+  dplyr::select(gene_id) %>%
+  pull()
+```
+
+```{r}
+# annotation of top regulated genes
+dat_annotated <- dat %>%
+  mutate(annotation  = case_when(
+    gene_id %in% topGenes ~ "GOI",
+    TRUE ~ "normal"
+  ))
+```
+
+
+```{r}
+#png("Volcano_top10_cd2_vs_cd1.png")
+dat_annotated %>% 
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), color = annotation)) + # see that we are using the -log10() function to transform our padj values
+  geom_point()+
+  geom_hline(yintercept = -log10(0.05), linetype =2,size=1, color="#231076") +
+  geom_vline(xintercept = c(-2,2), linetype = 2, size=1, color="#231076") +
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076",hjust = 0.5, size = 12, face = "bold"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        axis.title = element_text(color = "#231076",face = "bold",size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=10),
+        axis.text.y= element_text(color = "#231076",size=10),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(y = expression(-Log[10]~"(Adjusted P-value)"), x = expression(Log[2] ~ "FC"), color="Gene regulation")+
+  scale_color_manual(values = c("#ff914d","grey"), 
+                     labels = c( "Top regulated @ cd2","Other genes")) + 
+  ggtitle("Top regulated genes at cd2  vs Control") 
+```
+
+## BIS top 10 genes among up- & downregulated
+```{r}
+# top regulated genes
+topGenes_bis <- dat %>%
+  arrange(padj) %>%
+  head(n = 13) %>%
+  dplyr::select(gene_id) %>%
+  pull()
+
+# annotation of top regulated genes
+dat_annotated_bis <- labelled_dat %>%
+  mutate(annotation  = case_when(
+    gene_id %in% topGenes_bis ~ "GOI",
+    TRUE ~ "normal"
+  ))
+
+dat_annotated_bis <- dat_annotated_bis %>%
+  mutate(annotation_bis= case_when(
+    annotation == "GOI" & Up_Down == "Upregulated" ~ "GOI", # label genes regulated among the top 10
+    annotation == "GOI" & Up_Down == "Downregulated" ~ "GOI",
+    TRUE ~ "Normal"
+  ))
+```
+
+```{r}
+#png("Volcano_top10bis_cd2_vs_cd1.png", width = 300, height = 300)
+
+#write.csv(dat_annotated_bis, "top_regulated_genes.csv")
+
+dat_annotated_bis %>% 
+  ggplot(aes(x = log2FoldChange, y = -log10(padj), color = annotation_bis)) + # see that we are using the -log10() function to transform our padj values
+  geom_point(size=3)+
+  geom_hline(yintercept = -log10(0.05), linetype =2,size=1, color="#231076") +
+  geom_vline(xintercept = c(-2,2), linetype = 2, size=1, color="#231076") +
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076", size = 14, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        legend.position = c(0.5,0.8),
+        axis.title = element_text(color = "#231076",face = "bold",size = 12),
+        legend.text = element_text(size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=12),
+        axis.text.y= element_text(color = "#231076",size=12),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(y = expression(-Log[10]~"(Adjusted P-value)"), x = expression(Log[2] ~ "FC"), color="Gene regulation")+
+  scale_color_manual(values = c("#231076","grey"), 
+                     labels = c( "10-Top regulated","Other genes")) + 
+  ggtitle("Top regulated genes at cd2  vs Control") 
+```
+
+
+
+```{r}
+labelled_dat2 <- dat %>%
+  mutate(abs_l2fc = abs(log2FoldChange), # take absolute value of fold change
+         up_down = if_else(log2FoldChange <= 0, "Down", "Up") # label genes as up or downregulated
+         ) %>% 
+  mutate(l2fc = case_when( # bin our genes based on fold change
+    abs_l2fc >=4 ~ ">4",
+    abs_l2fc >=3 ~ "3",
+    abs_l2fc >=2 ~ "2",
+    abs_l2fc >=1 ~ "1",
+    TRUE ~ "<1"
+  ))
+labelled_dat2$l2fc <- factor(labelled_dat2$l2fc)
+levels(labelled_dat2$l2fc)
+labelled_dat2$l2fc <- factor(labelled_dat2$l2fc,levels=c("<1","1", "2", "3", ">4")) # modify the level order in the categorical variable
+view(labelled_dat2)
+summary(as.factor(labelled_dat2$l2fc))
+```
+
+```{r}
+# gene counts distribution
+#png("regulated_genes_distribution.png", width=450, height = 450)
+labelled_dat2 %>% 
+  ggplot(aes(x=l2fc, fill = up_down)) +
+  geom_bar(color = "#231076") +
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076", size = 14, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        legend.position = c(0.9,0.4),
+        axis.title = element_text(color = "#231076",face = "bold",size = 12),
+        legend.text = element_text(size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=12),
+        axis.text.y= element_text(color = "#231076",size=12),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(y = "# of Genes", x = expression(Log[2] ~ "FC"), fill="Regulated")+
+  scale_fill_manual(values = group09_colors) + 
+  ggtitle("Regulated genes at cd2  vs Control") 
+```
+
+# Visualizing the Top 10 Highest and Lowest Up/Downregulated Genes
+# Top 10 highest and lowest up/downregulated genes
+```{r}
+# Top 10 upregulated genes
+top10Genes <- dat %>%
+  arrange(desc(log2FoldChange)) %>% # arrange from the highest to the lowest value
+  head(n = 10)
+
+top10Genes
+```
+
+```{r}
+# Top 10 upregulated genes
+bot10Genes <- dat %>%
+  arrange(log2FoldChange) %>% # arrange from the lowest to the highest values
+  head(n = 10)
+
+bot10Genes
+```
+
+```{r}
+# Take the 'gene_id' column in order and store it as a character vector
+order <- top10Genes %>% 
+  dplyr::select(gene_id) %>% 
+  pull()
+```
+
+```{r}
+# Bind our two top 10 genes dataframes using the bind_rows() column
+joined_top10 <- bind_rows(top10Genes, bot10Genes) %>%
+  mutate(up_down = if_else(log2FoldChange > 0, "Up-", "Down-")) %>%
+  arrange(log2FoldChange)
+
+# To organize our bar plot, we can also extract the order of our organized genes
+order_joined <- joined_top10 %>% 
+  dplyr::select(gene_id) %>% 
+  pull()
+```
+
+```{r}
+png("Top Regulated genes at cd2  vs Control.png", width=450, height = 450)
+joined_top10 %>% 
+  ggplot(aes(x = gene_id, y = log2FoldChange, fill = up_down)) +
+  geom_errorbar(aes(ymin= log2FoldChange - lfcSE, ymax =log2FoldChange + lfcSE), width = 0.4) +
+  geom_col(color = "black", width = 0.8) +
+  scale_x_discrete(limits = order_joined) + 
+  labs(y = "log2(FC)", x= "Gene ID", fill = "Regulation") +
+  geom_hline(yintercept = 0) +
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076", size = 14, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        legend.position = c(0.8,0.2),
+        axis.title = element_text(color = "#231076",face = "bold",size = 12),
+        legend.text = element_text(size = 10),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=10),
+        axis.text.y= element_text(color = "#231076",size=9),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  scale_y_continuous(limits = c(-5,7), breaks = seq(-5, 7, 1), expand = c(0,0)) + 
+  labs(x = "Gene ID", y = expression(Log[2] ~ "FC"), fill="Regulation")+
+  scale_fill_manual(values = group09_colors) + 
+  coord_flip()+ 
+  ggtitle("Top Regulated genes at cd2") 
+  
+```
+
+# Extracting and Plotting Normalized Counts
+
+```{r}
+# Extract the normalized counts and prepare the data for plotting
+norm_dds <- estimateSizeFactors(dds)
+normalized_counts <- counts(norm_dds, normalized = TRUE) %>% 
+  as.data.frame() %>%
+  rownames_to_column(var = "gene_id") %>% # convert the rownames to a column
+  pivot_longer(!gene_id, names_to = "Sample", values_to = "count") %>% # converts data to a "tidy" format for plotting. Check the documentation for this handy function
+  separate(Sample, into = c("Sample", "replicate"), sep = "_rep") %>% # splits a column into multiple columns based on a separator
+  dplyr::select(-replicate) %>% # drop a column
+  mutate(Sample = factor(Sample)) # convert column to a factor
+
+# Change the order of the levels
+levelsOrder <- c("cd1", "cd2")
+normalized_counts$Sample <- factor(normalized_counts$Sample, levels = levelsOrder)
+
+# Visualize the dataframe
+normalized_counts
+
+sum(normalized_counts$count)
+```
+
+```{r}
+gene_of_interest <- pull(dat[123, 1]) 
+gene_of_interest
+# Let's select all rows in our 'normalized_counts' dataframe that have the same 'gene_id' as our `gene_of_interest`
+#png("normalized counts.png", width = 650, height=650)
+normalized_counts %>%
+  filter(gene_id == gene_of_interest) %>%
+  ggplot(aes(x = Sample, y = count, color = Sample)) + 
+    geom_jitter(width = 0.2, size = 5) +
+    theme_classic() +
+  theme(plot.title = element_text(color = "#231076",hjust = 0.5, size = 18, face = "bold"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        axis.title = element_text(color = "#231076",face = "bold",size = 16),
+        legend.text = element_text(size=14),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=16),
+        axis.text.y= element_text(color = "#231076",size=18),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(x = "Sample", y = "Count", fill="Condition")+
+  scale_color_manual(values = group09_colors) + 
+  ggtitle("Top Regulated genes at cd2  vs Control")
+```
+
+# Plotting a Z-score Heatmap
+```{r}
+png("all gene pheatmap.png", height = 9060, width = 1900)
+vsd <- assay(vst(dds))
+
+Z <- t(scale(t(vsd)))
+
+# Check the Z-score matrix
+head(Z)
+
+# Remove rows with NA values - if not we will get errors!
+Z_no_NA <- na.omit(Z)
+
+# Now lets plot using pheatmap()
+```
+
+
+```{r}
+pheatmap(Z_no_NA, fontsize_row = 8, fontsize_col = 12, color=colorRampPalette(c("#ff914d","grey","#231076"))(100),
+         main = "Gene correlation between conditions")
+```
+
+```{r}
+# Extract the row indices (akak the location in the matrix) of the rows with the highest variation
+topVarGenes <- rowVars(vsd) %>% 
+  order(decreasing = TRUE) %>% 
+  head(20) 
+
+# Subset the Z-score matrix for only the row we're interested in (stored in topVarGenes)
+Z_topGenes <- Z[topVarGenes,] 
+```
+
+```{r}
+png("top 20 genes pheatmap.png")
+pheatmap(Z_topGenes, fontsize_row = 10, fontsize_col = 8, color=colorRampPalette(c("#ff914d","grey","#231076"))(20),
+         main = "Top 20 Genes correlation between conditions")
+```
+
+
+# *GO enrichment analysis & Map GO Terms*
+## Top GO
+```{r}
+# Load the mapping file 
+geneID2GO <- readMappings("streptococcus_thermophilius_GOIDs.tsv")
+geneID2GO
+# Vector of all the gene IDs in the mapping file
+geneUniverse <- names(geneID2GO)
+geneUniverse
+# Load the differential expression data
+data <- read_csv("strepto_thermophil_results.csv")
+sthermo_gene_name <- read_csv("Sthermo_annotation_gene.csv")
+data
+sthermo_gene_name
+
+merge_data_name <- merge(data, sthermo_gene_name, by="gene_id")
+merge_data_name
+data <- merge_data_name
+```
+
+
+```{r}
+# Filter for statistically significant upregulated genes with names
+up_genes_name <- data %>% 
+  filter(padj <= 0.05 & log2FoldChange >= 0)%>%
+  filter(!is.na(gene_name))%>%
+  arrange(desc(log2FoldChange))
+
+# Filter for statistically signficant downregulated genes with names
+down_genes_name <- data %>% 
+  filter(padj <= 0.05 & log2FoldChange <= 0)%>%
+  filter(!is.na(gene_name))%>%
+  arrange(log2FoldChange)
+
+# extract the gene IDs of the upregulated and downregulated genes
+upregulated_genes_name <- as.character(up_genes_name$gene_name)
+downregulated_genes_name <- as.character(down_genes_name$gene_name)
+
+upregulated_genes_name
+downregulated_genes_name
+
+summary(upregulated_genes_name)
+summary(downregulated_genes_name)
+
+```
+```{r}
+# Filter for statistically significant upregulated genes
+up_genes <- data %>% 
+  filter(padj <= 0.05 & log2FoldChange >= 1)%>%
+  arrange(desc(log2FoldChange))
+
+# Filter for statistically signficant downregulated genes
+down_genes <- data %>% 
+  filter(padj <= 0.05 & log2FoldChange <= -1)%>%
+  arrange(log2FoldChange)
+
+# extract the gene IDs of the upregulated and downregulated genes
+upregulated_genes <- as.character(up_genes$gene_id)
+downregulated_genes <- as.character(down_genes$gene_id)
+
+summary(upregulated_genes)
+summary(downregulated_genes)
+
+```
+
+
+```{r}
+# Get binary values depending on if a gene is upregulated or not (or downregulated or not)
+up_gene_list <- factor(as.integer(geneUniverse %in% upregulated_genes))
+down_gene_list <- factor(as.integer(geneUniverse %in% downregulated_genes))
+
+```
+
+
+```{r}
+# Set names for the gene list.
+names(up_gene_list) <- geneUniverse
+names(down_gene_list) <- geneUniverse
+```
+
+
+# GO Term Enrichment
+
+
+```{r}
+# Build the GOdata object in topGO for upregulated
+up_GO_data <- new("topGOdata", 
+                  description = "S.thermoph_cd1_cd2", 
+                  ontology = "BP", 
+                  allGenes = up_gene_list,
+                  annot = annFUN.gene2GO,
+                  gene2GO = geneID2GO)
+up_GO_data
+
+# Build the GOdata object in topGO for downregulated
+down_GO_data <- new("topGOdata",
+                    description = "S.thermoph_cd1_cd2",
+                    ontology = "BP",
+                    allGenes = down_gene_list,
+                    annot = annFUN.gene2GO,
+                    gene2GO = geneID2GO)
+down_GO_data
+
+# Perform stats for upregulated data
+up_result <- runTest(up_GO_data,
+                     algorithm = "weight01",
+                     statistic = "fisher")
+
+# Perform stats for downregulated data
+down_result <- runTest(down_GO_data,
+                       algorithm = "weight01",
+                       statistic = "fisher")
+
+# Extract a summary of upregulated results
+up_GO <- GenTable(up_GO_data,
+                       weight01 = up_result,
+                       orderBy = "up_result",
+                       ranksOf = "up_result",
+                       topNodes = 900)
+
+# Extract a summary of downregulated results
+down_GO <- GenTable(down_GO_data,
+                         weight01 = down_result,
+                         orderBy = "down_result",
+                         ranksOf = "down_result",
+                         topNodes = 900)
+
+
+```
+
+
+```{r}
+# Filter out any non-significant data and calculate the gene ratio
+down_GO_filtered <- down_GO %>%
+  mutate(GeneRatio = Significant/Annotated, 
+         weight01 = as.numeric(weight01)) %>%
+  filter(weight01 <= 0.05) 
+```
+
+```{r}
+# Filter out any non-significant data and calculate the gene ratio
+up_GO_filtered <- up_GO %>%
+  mutate(GeneRatio = Significant/Annotated, 
+         weight01 = as.numeric(weight01))%>%
+  filter(weight01 <= 0.05) 
+```
+
+
+
+```{r}
+#png("GO_terms_downregulated_genes.png", width = 450, height =450)
+# First, let's arrange the data based on the enrichment ratio. 
+down_GO_filtered_arranged <- down_GO_filtered %>% 
+  arrange(GeneRatio) %>%
+  mutate(Term = factor(Term))
+
+# Now let's extract the order of the term column
+order_term <- down_GO_filtered_arranged %>% 
+  pull(Term) # pull() extracts a column as a vector
+
+down<-
+  down_GO_filtered_arranged %>% 
+  ggplot(aes(x= Term, y = GeneRatio, colour = weight01)) +
+  geom_col(width = 0.05) +
+  geom_point(aes(size = Significant)) +
+  coord_flip() +
+  scale_x_discrete(limits = order_term,labels = function(x) str_wrap(x, width = 25)) + 
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076", size = 14, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        #legend.position = c(0.9,0.2),
+        axis.title = element_text(color = "#231076",face = "bold",size = 14),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=12),
+        axis.text.y= element_text(color = "#231076",size=12),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(x = "", y = "Enrichment Ratio", color = "Adjusted \n p-value", size = " \n Number of \n Significant \n Genes", caption = expression(Log[2] ~ "FoldChange cutoff ±1"))+
+  scale_colour_gradient(low = "#ff914d", high = "#231076")+
+  scale_y_continuous(limits = c(0,1.02), breaks = seq(0, 1, 0.2), expand = c(0, 0))+  ggtitle(" ")
+```
+
+
+```{r}
+```
+
+```{r}
+#png("GO_terms_upregulated_genes.png", width=450, height=450)
+# First, let's arrange the data based on the enrichment ratio. 
+up_GO_filtered_arranged <- up_GO_filtered %>% 
+  arrange(GeneRatio) %>%
+  mutate(Term = factor(Term))
+
+# Now let's extract the order of the term column
+order_term <- up_GO_filtered_arranged %>% 
+  pull(Term) # pull() extracts a column as a vector
+
+up<-
+  up_GO_filtered_arranged %>% 
+  ggplot(aes(x= Term, y = GeneRatio, colour = weight01)) +
+  geom_col(width = 0.05) +
+  geom_point(aes(size = Significant)) +
+  coord_flip() +
+  scale_x_discrete(limits = order_term, labels=function(x) str_wrap(x, width = 25)) + 
+  theme_classic() +
+  theme(plot.title = element_text(color = "#231076", size = 15, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        #legend.position = c(0.9,0.2),
+        axis.title = element_text(color = "#231076",face = "bold",size = 14),
+        legend.text = element_text(size = 14),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = "white"), 
+        #panel.border = element_rect(color = "#231076",linewidth = 2),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=12),
+        axis.text.y= element_text(color = "#231076",size=12),
+        axis.line = element_line(size = 1, color ="#231076" )) + 
+  labs(x = "GO Term Description", y = "Enrichment Ratio", color = "P-value", size = " \n Number of \n Significant \n Genes", caption = " ")+
+  scale_colour_gradient(low = "#ff914d", high = "#231076")+
+  scale_y_continuous(limits = c(0,1.02), breaks = seq(0, 1, 0.2), expand = c(0, 0))+
+  #scale_color_manual(values = group09_colors) + 
+  ggtitle("Enrichment ratio of significant terms")
+```
+
+
+```{r}
+# combining the plot down and up
+png("GO_terms_log2fc_1_up_downregulated_genes.png", width=900, height=450)
+cowplot::plot_grid(up, down, labels=c("\n A. Upregulated","\n  B. Downregulated"), label_size = 14, hjust = -1.5, vjust = 1)
+
+```
+```{r}
+write.csv(down_GO_filtered_arranged, "top_log2fc1_DOWNregulated_genes.csv")
+write.csv(up_GO_filtered_arranged, "top_log2fc1_UPregulated_genes.csv")
+down_GO_filtered_arranged
+up_GO_filtered_arranged
+```
+
+
+
+```{r}
+# Add labels to upregulated and downregulated dataframes
+up_GO <- up_GO %>% 
+  mutate(up_down = "UP")
+
+down_GO <- down_GO %>% 
+  mutate(up_down = "DOWN")
+
+# Make a joined dataframe
+joined_GO_filtered_arranged <- bind_rows(up_GO, down_GO) %>%
+  filter(weight01 <= 0.05) %>%
+  mutate(GeneRatio = Significant/Annotated, weight01 = as.numeric(weight01)) %>%
+  arrange(desc(GeneRatio)) %>%
+  mutate(Term = factor(Term)) %>%
+  head(n = 40)
+
+# Extract the column order
+order_term_joined <- joined_GO_filtered_arranged %>% 
+  pull(Term)
+```
+
+
+```{r}
+
+png("GO_terms_log2fc_1_regulated_genes.png", width=600, height=450)
+
+joined_GO_filtered_arranged %>% 
+  ggplot(aes(x= Term, y = GeneRatio, color = weight01)) +
+  geom_point(aes(size= Significant)) +
+  coord_flip() +
+  scale_x_discrete(limits = order_term_joined, labels=function(x) str_wrap(x, width = 50)) + 
+  scale_color_gradient(low = "#ff914d", high = "#231076") +
+  theme_light() +
+  labs(x = "GO Term Description", y = "Enrichment Ratio", color = "P-value", size = " \n Number of \n Significant \n Genes") +
+  theme(plot.title = element_text(color = "#231076", size = 12, face = "bold.italic"), 
+        legend.title = element_text(color = "#231076",face = "bold"), 
+        axis.title = element_text(color = "#231076",face = "bold",size = 10), 
+        panel.background = element_rect(fill = "white"), 
+        panel.border = element_rect(color = "#231076",linewidth = 1),
+        #legend.key = element_rect(fill = "NA"),
+        axis.text.x = element_text(color = "#231076",size=10),
+        axis.text.y= element_text(color = "#231076",size=10),
+        axis.line = element_line(size = 1, color ="#231076" ),
+        #panel.border = element_rect(color = "black"), 
+        panel.grid.major = element_line(colour = "grey"),
+        panel.grid.minor = element_line(colour = "grey96"),
+        strip.background = element_rect(colour = "#231076", linewidth = 1)) +
+  scale_y_continuous(limits = c(0, 1.02), breaks = seq(0, 1, 0.5), expand = c(0, 0)) +
+  facet_grid(.~ up_down)+
+  ggtitle("Enrichment ratio of significant GO terms")
+```
+
+# GO structure visualization
+```{r}
+
+# Run tests and generate results
+resultFisher <- runTest(up_GO_data, algorithm = "weight01", statistic = "fisher")
+
+# Generate table of results
+allRes <- GenTable(up_GO_data, classicFisher = up_result, classicKS = resultKS, elimKS = resultKS.elim, orderBy = "elimKS", ranksOf = "classicFisher", topNodes = 10)
+
+```
+
+
+```{r}
+pdf("top_Upregulated_genes.pdf", width = 11, height = 8, 
+    bg = "white", colormodel = "cmyk", paper = "letter")          
+
+# Plot nodes and significant GO terms
+par(cex = 0.65)
+showSigOfNodes(up_GO_data, score(up_result), firstSigNodes = 5, useInfo = 'def')
+title (main="Upregulated genes", cex.main=1)
+mtext("Top 5 GO terms. Boxes indicate the 5 most significant terms.\n Box color represents the relative significance, ranging from dark red (most significant) to light yellow (least significant).", side = 1, line = -0.8, col = "black", cex = 0.75, adj = 0,padj = 0.25)
+dev.off()
+```
+
+
+```{r}
+pdf("top_Downregulated_genes.pdf", width = 11, height = 8, 
+    bg = "white", colormodel = "cmyk", paper = "letter")          
+
+# Plot nodes and significant GO terms
+par(cex = 0.65)
+showSigOfNodes(up_GO_data, score(down_result), firstSigNodes = 5, useInfo = 'def')
+title (main="Downregulated genes", cex.main=1)
+mtext("Top 5 GO terms. Boxes indicate the 5 most significant terms.\n Box color represents the relative significance, ranging from dark red (most significant) to light yellow (least significant).", side = 1, line = -0.8, col = "black", cex = 0.75, adj = 0,padj = 0.25)
+dev.off()
+```
+
